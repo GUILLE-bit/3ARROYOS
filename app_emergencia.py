@@ -123,7 +123,7 @@ def load_weights(base_dir: Path):
     return IW, bias_IW, LW, bias_out
 
 # =================== UI ===================
-st.title("PREDICCIÓN EMERGENCIA AGRÍCOLA - LOLIUM sp. (Histórico + Pronóstico API)")
+st.title("PREDICCIÓN EMERGENCIA AGRÍCOLA - LOLIUM sp. TRES ARROYOS")
 
 st.sidebar.header("Fuente de datos")
 fuente = st.sidebar.radio(
@@ -218,7 +218,7 @@ def plot_and_table(nombre, df):
     X_real = df[["Julian_days", "TMAX", "TMIN", "Prec"]].to_numpy(dtype=float)
     fechas = pd.to_datetime(df["Fecha"])
 
-    if mostrar_fuera_rango and detectar_fuera_rango(X_real, modelo.input_min, modelo.input_max):
+    # if mostrar_fuera_rango and detectar_fuera_rango(X_real, modelo.input_min, modelo.input_max):
         st.info(f"⚠️ {nombre}: hay valores fuera del rango de entrenamiento ({modelo.input_min} a {modelo.input_max}).")
 
     pred = modelo.predict(X_real)
