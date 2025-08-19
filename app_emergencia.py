@@ -1,4 +1,4 @@
-# app_emergencia.py (actualizado para histórico local + pronóstico API)
+# app_emergencia.py (Histórico local + Pronóstico API + Fuente + Gráficos de pronóstico)
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -22,24 +22,19 @@ class PracticalANNModel:
         self.med_thr = medium
 
     def tansig(self, x): return np.tanh(x)
-
     def normalize_input(self, X_real):
         return 2 * (X_real - self.input_min) / (self.input_max - self.input_min) - 1
-
     def desnormalizar_salida(self, y_norm, ymin=-1, ymax=1):
         return (y_norm - ymin) / (ymax - ymin)
-
     def _predict_single(self, x_norm):
         z1 = self.IW.T @ x_norm + self.bias_IW
         a1 = self.tansig(z1)
         z2 = self.LW @ a1 + self.bias_out
         return self.tansig(z2)
-
     def _clasificar(self, valor):
         if valor < self.low_thr: return "Bajo"
         elif valor <= self.med_thr: return "Medio"
         else: return "Alto"
-
     def predict(self, X_real):
         X_norm = self.normalize_input(X_real)
         emerrel_pred = np.array([self._predict_single(x) for x in X_norm])
@@ -190,29 +185,75 @@ if df_hist is not None:
 df_fcst = None
 try:
     df_fcst = fetch_forecast()
+    if df_fcst is not None and not df_fcst.empty:
+        st.success(f"Pronóstico API cargado: {df_fcst['Fecha'].min().date()} → {df_fcst['Fecha'].max().date()} · {len(df_fcst)} días")
 except Exception as e:
     st.error(f"Fallo al obtener pronóstico desde API: {e}")
 
-# =================== Combinar ===================
+# =================== Gráficos/tabla del PRONÓSTICO (API) ===================
+if df_fcst is not None and not df_fcst.empty:
+    st.subheader("📊 Pronóstico Meteorológico - API MeteoBahía (Tres Arroyos)")
+    # Temperaturas
+    fig_temp = go.Figure()
+    fig_temp.add_trace(go.Scatter(
+        x=df_fcst["Fecha"], y=df_fcst["TMAX"], mode="lines+markers",
+        name="TMAX (°C)", hovertemplate="Fecha: %{x|%d-%b-%Y}<br>TMAX: %{y:.1f} °C"
+    ))
+    fig_temp.add_trace(go.Scatter(
+        x=df_fcst["Fecha"], y=df_fcst["TMIN"], mode="lines+markers",
+        name="TMIN (°C)", hovertemplate="Fecha: %{x|%d-%b-%Y}<br>TMIN: %{y:.1f} °C"
+    ))
+    fig_temp.update_layout(yaxis_title="Temperatura (°C)", xaxis_title="Fecha", hovermode="x unified", height=380)
+    st.plotly_chart(fig_temp, use_container_width=True, theme="streamlit")
+
+    # Precipitación
+    fig_prec = go.Figure()
+    fig_prec.add_trace(go.Bar(
+        x=df_fcst["Fecha"], y=df_fcst["Prec"], name="Precipitación (mm)",
+        hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Prec: %{y:.1f} mm"
+    ))
+    fig_prec.update_layout(yaxis_title="Precipitación (mm)", xaxis_title="Fecha", hovermode="x unified", height=360)
+    st.plotly_chart(fig_prec, use_container_width=True, theme="streamlit")
+
+    # Tabla + descarga
+    st.dataframe(df_fcst[["Fecha", "TMAX", "TMIN", "Prec"]], use_container_width=True)
+    st.download_button(
+        "Descargar pronóstico API",
+        df_fcst.to_csv(index=False).encode("utf-8"),
+        "pronostico_api.csv",
+        "text/csv"
+    )
+
+st.divider()
+
+# =================== Combinar (Histórico < hoy) + (API >= hoy) ===================
 dfs = []
 if df_hist is not None and df_fcst is not None:
     today = pd.Timestamp.today().normalize()
     df_hist_past = df_hist[df_hist["Fecha"] < today].copy()
     df_fcst_today_fwd = df_fcst[df_fcst["Fecha"] >= today].copy()
+    # Etiquetas de fuente
+    df_hist_past["Fuente"] = "Histórico CSV"
+    df_fcst_today_fwd["Fuente"] = "API MeteoBahía"
     df_all = pd.concat([df_hist_past, df_fcst_today_fwd], ignore_index=True)
     df_all = df_all.drop_duplicates(subset=["Fecha"], keep="last").sort_values("Fecha").reset_index(drop=True)
     df_all["Julian_days"] = df_all["Fecha"].dt.dayofyear
+    # Resumen de fuente
+    vc = df_all["Fuente"].value_counts().to_dict()
+    st.caption(f"Fuente de datos combinada → Histórico: {vc.get('Histórico CSV', 0)} · API: {vc.get('API MeteoBahía', 0)}")
     dfs.append(("Histórico+Pronóstico", df_all))
 elif df_fcst is not None and df_hist is None:
     st.info("Usando solo Pronóstico (API) porque no hay histórico válido disponible.")
+    df_fcst["Fuente"] = "API MeteoBahía"
     dfs.append(("Solo_Pronóstico", df_fcst))
 elif df_hist is not None and df_fcst is None:
     st.info("Usando solo Histórico porque falló el pronóstico de la API.")
+    df_hist["Fuente"] = "Histórico CSV"
     dfs.append(("Solo_Histórico", df_hist))
 else:
     st.stop()
 
-# =================== Procesamiento y gráficos ===================
+# =================== Procesamiento y gráficos (modelo) ===================
 def plot_and_table(nombre, df):
     df = df.sort_values("Fecha").reset_index(drop=True)
     X_real = df[["Julian_days", "TMAX", "TMIN", "Prec"]].to_numpy(dtype=float)
@@ -224,6 +265,9 @@ def plot_and_table(nombre, df):
     pred = modelo.predict(X_real)
     pred["Fecha"] = fechas
     pred["Julian_days"] = df["Julian_days"]
+    if "Fuente" in df.columns:
+        pred["Fuente"] = df["Fuente"].values
+
     pred["EMERREL acumulado"] = pred["EMERREL(0-1)"].cumsum()
     pred["EMERREL_MA5"] = pred["EMERREL(0-1)"].rolling(window=5, min_periods=1).mean()
 
@@ -320,7 +364,10 @@ def plot_and_table(nombre, df):
 
     st.subheader(f"Resultados (1/feb → 1/sep) - {nombre}")
     col_emeac = "EMEAC (%) - ajustable (rango)" if "EMEAC (%) - ajustable (rango)" in pred_vis.columns else "EMEAC (%) - ajustable"
-    tabla = pred_vis[["Fecha", "Julian_days", "Nivel_Emergencia_relativa", col_emeac]].rename(
+    cols_tabla = ["Fecha", "Julian_days", "Nivel_Emergencia_relativa", col_emeac]
+    if "Fuente" in pred_vis.columns:
+        cols_tabla.insert(2, "Fuente")
+    tabla = pred_vis[cols_tabla].rename(
         columns={"Nivel_Emergencia_relativa": "Nivel de EMERREL", col_emeac: "EMEAC (%)"}
     )
     st.dataframe(tabla, use_container_width=True)
