@@ -256,7 +256,7 @@ def plot_and_table(nombre, df):
     pred_vis["EMERREL_MA5_rango"] = pred_vis["EMERREL(0-1)"].rolling(window=5, min_periods=1).mean()
     colores_vis = obtener_colores(pred_vis["Nivel_Emergencia_relativa"])
 
-    st.subheader("EMERGENCIA RELATIVA DIARIA - BORDENAVE")
+    st.subheader("EMERGENCIA RELATIVA DIARIA - TRES ARROYOS")
     fig_er = go.Figure()
     fig_er.add_bar(
         x=pred_vis["Fecha"], y=pred_vis["EMERREL(0-1)"],
@@ -291,7 +291,7 @@ def plot_and_table(nombre, df):
     fig_er.update_yaxes(rangemode="tozero")
     st.plotly_chart(fig_er, use_container_width=True, theme="streamlit")
 
-    st.subheader("EMERGENCIA ACUMULADA DIARIA - BORDENAVE")
+    st.subheader("EMERGENCIA ACUMULADA DIARIA - TRES ARROYOS")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=pred_vis["Fecha"], y=pred_vis["EMEAC (%) - máximo (rango)"],
                              mode="lines", line=dict(width=0), name="Máximo (reiniciado)",
