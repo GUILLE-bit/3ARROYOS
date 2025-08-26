@@ -1,4 +1,4 @@
-# app_emergencia.py (actualizado para histórico local + pronóstico API)
+# app_emergencia.py (actualizado para histórico local + pronóstico API, con LOCKDOWN + 7 días de API)
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -6,7 +6,44 @@ from pathlib import Path
 import plotly.graph_objects as go
 import requests, time, xml.etree.ElementTree as ET
 
-st.set_page_config(page_title="PREDICCIÓN EMERGENCIA AGRÍCOLA - LOLIUM sp.", layout="wide")
+# ========= LOCKDOWN STREAMLIT (sin menú, sin toolbar, sin badges) =========
+st.set_page_config(
+    page_title="PREDICCIÓN EMERGENCIA AGRÍCOLA - LOLIUM sp.",
+    layout="wide",
+    menu_items={
+        "Get help": None,
+        "Report a bug": None,
+        "About": None
+    }
+)
+st.markdown(
+    """
+    <style>
+    /* Menú hamburguesa */
+    #MainMenu {visibility: hidden;}
+    /* Footer */
+    footer {visibility: hidden;}
+    /* Toolbar superior (puede mostrar "View source" o "Manage app") */
+    header [data-testid="stToolbar"] {visibility: hidden;}
+    /* Badges / botones de despliegue */
+    .viewerBadge_container__1QSob {visibility: hidden;}
+    .st-emotion-cache-9aoz2h {visibility: hidden;}
+    .stAppDeployButton {display: none;}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+# ========= FIN LOCKDOWN =========
+
+# ========= Utilidades de error seguro (mensajes genéricos en UI) =========
+from typing import Callable, Any
+def safe_run(fn: Callable[[], Any], user_msg: str):
+    try:
+        return fn()
+    except Exception:
+        st.error(user_msg)
+        return None
+# ========= FIN utilidades =========
 
 # =================== Modelo ANN ===================
 class PracticalANNModel:
@@ -62,6 +99,7 @@ API_HEADERS = {
     "Referer": "https://meteobahia.com.ar/",
     "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
 }
+FORECAST_DAYS_LIMIT = 7  # fijo en código: usar solo los primeros 7 días de pronóstico
 
 def _to_float(x):
     try: return float(str(x).replace(",", "."))
@@ -92,12 +130,14 @@ def fetch_forecast(url: str = API_URL, retries: int = 3, backoff: int = 2) -> pd
                 })
             if not rows: raise RuntimeError("XML sin días válidos.")
             df = pd.DataFrame(rows).sort_values("Fecha").reset_index(drop=True)
+            # === limitar a los primeros 7 días de pronóstico ===
+            df = df.head(FORECAST_DAYS_LIMIT).copy()
             df["Julian_days"] = df["Fecha"].dt.dayofyear
             return df[["Fecha", "Julian_days", "TMAX", "TMIN", "Prec"]]
         except Exception as e:
             last_err = e
             time.sleep(backoff*(i+1))
-    raise RuntimeError(f"No pude obtener el pronóstico desde la API. Último error: {last_err}")
+    raise RuntimeError("No se pudo obtener el pronóstico desde la API.")
 
 # =================== Utilidades ===================
 def validar_columnas(df: pd.DataFrame) -> tuple[bool, str]:
@@ -132,7 +172,9 @@ fuente = st.sidebar.radio(
 )
 
 st.sidebar.header("Configuración")
-umbral_usuario = st.sidebar.number_input("Umbral de EMEAC para 100%", min_value=1.2, max_value=3.0, value=2.70, step=0.01, format="%.2f")
+umbral_usuario = st.sidebar.number_input(
+    "Umbral de EMEAC para 100%", min_value=1.2, max_value=3.0, value=2.70, step=0.01, format="%.2f"
+)
 
 st.sidebar.header("Validaciones")
 mostrar_fuera_rango = st.sidebar.checkbox("Avisar datos fuera de rango de entrenamiento", value=False)
@@ -140,15 +182,17 @@ mostrar_fuera_rango = st.sidebar.checkbox("Avisar datos fuera de rango de entren
 if st.sidebar.button("Forzar recarga de datos"):
     st.cache_data.clear()
 
-# Pesos modelo
-try:
+# Pesos modelo (mensaje genérico si falta algo)
+def _cargar_pesos():
     base = Path(__file__).parent if "__file__" in globals() else Path.cwd()
-    IW, bias_IW, LW, bias_out = load_weights(base)
-except FileNotFoundError as e:
-    st.error("Error al cargar archivos del modelo (IW.npy, bias_IW.npy, LW.npy, bias_out.npy). "
-             f"Ruta buscada: {base}. Detalle: {e}")
+    return load_weights(base)
+pesos = safe_run(
+    _cargar_pesos,
+    "Error al cargar archivos del modelo. Verifique que IW.npy, bias_IW.npy, LW.npy y bias_out.npy estén junto al script."
+)
+if pesos is None:
     st.stop()
-
+IW, bias_IW, LW, bias_out = pesos
 modelo = PracticalANNModel(IW, bias_IW, LW, bias_out)
 
 # =================== Cargar histórico ===================
@@ -156,21 +200,18 @@ df_hist = None
 hist_path_default = Path("meteo_daily.csv")
 
 if fuente == "Histórico local + Pronóstico (API)":
+    def _leer_hist_local():
+        return pd.read_csv(hist_path_default, parse_dates=["Fecha"])
     if hist_path_default.exists():
-        try:
-            df_hist = pd.read_csv(hist_path_default, parse_dates=["Fecha"])
-        except Exception as e:
-            st.error(f"No pude leer el histórico local en {hist_path_default}: {e}")
+        df_hist = safe_run(_leer_hist_local, "No se pudo leer el histórico local.")
     else:
-        st.warning(f"No se encontró {hist_path_default}. Podés subir el histórico en la opción: 'Subir histórico + usar Pronóstico (API)'.")
-
+        st.warning("No se encontró el histórico local. Subí un CSV en la opción de carga para combinar con la API.")
 elif fuente == "Subir histórico + usar Pronóstico (API)":
     up = st.file_uploader("Subí el histórico (.csv) con columnas: Fecha, Julian_days, TMAX, TMIN, Prec", type=["csv"])
     if up is not None:
-        try:
-            df_hist = pd.read_csv(up, parse_dates=["Fecha"])
-        except Exception as e:
-            st.error(f"No pude leer el CSV subido: {e}")
+        def _leer_hist_upload():
+            return pd.read_csv(up, parse_dates=["Fecha"])
+        df_hist = safe_run(_leer_hist_upload, "No se pudo leer el CSV subido.")
 
 # Validar/limpiar histórico
 if df_hist is not None:
@@ -187,12 +228,7 @@ if df_hist is not None:
         df_hist = df_hist.sort_values("Fecha").reset_index(drop=True)
 
 # =================== Pronóstico (API) ===================
-df_fcst = None
-try:
-    df_fcst = fetch_forecast()
-except Exception as e:
-    st.error(f"Fallo al obtener pronóstico desde API: {e}")
-
+df_fcst = safe_run(fetch_forecast, "Fallo al obtener el pronóstico desde la API.")
 # =================== Combinar ===================
 dfs = []
 if df_hist is not None and df_fcst is not None:
@@ -218,8 +254,8 @@ def plot_and_table(nombre, df):
     X_real = df[["Julian_days", "TMAX", "TMIN", "Prec"]].to_numpy(dtype=float)
     fechas = pd.to_datetime(df["Fecha"])
 
-# if mostrar_fuera_rango and detectar_fuera_rango(X_real, modelo.input_min, modelo.input_max):
-#        st.info(f"⚠️ {nombre}: hay valores fuera del rango de entrenamiento ({modelo.input_min} a {modelo.input_max}).")
+    if mostrar_fuera_rango and detectar_fuera_rango(X_real, modelo.input_min, modelo.input_max):
+        st.info("⚠️ Hay valores fuera del rango de entrenamiento de la red.")
 
     pred = modelo.predict(X_real)
     pred["Fecha"] = fechas
